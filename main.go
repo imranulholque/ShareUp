@@ -240,6 +240,7 @@ $o.Dispose()`
 	default:
 		cmd = exec.Command("zenity", "--file-selection", "--directory")
 	}
+		hideWindow(cmd)
 	out, _ := cmd.Output()
 	writeJSON(w, map[string]string{"path": strings.TrimSpace(string(out))})
 }
