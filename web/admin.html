@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>shareUp admin</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:520px;margin:30px auto;padding:0 16px;color:#111}
+.card{border:1px solid #ddd;border-radius:12px;padding:16px;margin-bottom:16px}
+input[type=text]{width:100%;padding:8px;box-sizing:border-box}
+.r{display:flex;gap:8px;margin-top:6px} button{padding:8px 12px}
+#msg{color:#b91c1c;min-height:20px} img{display:block;margin:auto}
+</style></head><body>
+<h1>shareUp</h1>
+<div class="card">
+ <img id="qr" width="260" height="260" alt="QR">
+ <p style="text-align:center"><b id="url"></b></p>
+ <div class="r">IP: <select id="ip"></select>
+  Port: <input id="port" type="number" min="1024" max="65535" style="width:90px">
+  <button id="sp">Set</button></div>
+ <div id="msg"></div>
+</div>
+<div class="card"><b>Phone → PC (save folder)</b>
+ <div class="r"><input type="text" id="recv"><button id="br">Browse</button></div></div>
+<div class="card"><label><input type="checkbox" id="on"> <b>PC → Phone sharing</b></label>
+ <div class="r"><input type="text" id="share"><button id="bs">Browse</button></div></div>
+<script>
+const $=s=>document.querySelector(s);
+async function api(path,body){
+ const r=await fetch(path,{method:'POST',body:body?JSON.stringify(body):null});
+ if(!r.ok){$('#msg').textContent=await r.text();return null}
+ $('#msg').textContent='';return r.json();
+}
+function render(s){
+ if(!s)return;
+ $('#url').textContent=s.url||'No network found';
+ if(s.url)$('#qr').src='/admin/qr.png?u='+encodeURIComponent(s.url)+'&t='+Date.now();
+ $('#ip').innerHTML='';s.ips.forEach(i=>{const o=document.createElement('option');o.value=o.textContent=i;if(i==s.ip)o.selected=true;$('#ip').append(o)});
+ $('#port').value=s.port;$('#recv').value=s.recvDir;$('#share').value=s.shareDir;$('#on').checked=s.shareOn;
+}
+async function init(){render(await api('/admin/state'))}
+$('#ip').onchange=async()=>render(await api('/admin/set',{ip:$('#ip').value}));
+$('#sp').onclick=async()=>{const p=parseInt($('#port').value);const s=await api('/admin/set',{port:p});if(s){location.href='http://localhost:'+s.port+'/admin'}};
+$('#recv').onchange=async()=>render(await api('/admin/set',{recvDir:$('#recv').value}));
+$('#share').onchange=async()=>render(await api('/admin/set',{shareDir:$('#share').value}));
+$('#on').onchange=async()=>render(await api('/admin/set',{shareOn:$('#on').checked}));
+$('#br').onclick=async()=>{const j=await api('/admin/browse');if(j&&j.path)render(await api('/admin/set',{recvDir:j.path}))};
+$('#bs').onclick=async()=>{const j=await api('/admin/browse');if(j&&j.path)render(await api('/admin/set',{shareDir:j.path}))};
+init();
+</script></body></html>
