@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -318,31 +317,43 @@ func upload(w http.ResponseWriter, r *http.Request) {
 
 func list(w http.ResponseWriter, r *http.Request) {
 	c := get()
-	type fi struct {
+	type item struct {
 		Name string `json:"name"`
+		Dir  bool   `json:"dir"`
 		Size int64  `json:"size"`
 		T    int64  `json:"t"`
 	}
-	out := []fi{}
-	if c.ShareOn && c.ShareDir != "" {
+	out := []item{}
+	on := c.ShareOn && c.ShareDir != ""
+	sub := ""
+	if on {
 		base := filepath.Clean(c.ShareDir)
-		filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
+		sub = strings.Trim(filepath.ToSlash(r.URL.Query().Get("path")), "/")
+		full := filepath.Join(base, filepath.FromSlash(sub))
+		rel, err := filepath.Rel(base, full)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			http.Error(w, "forbidden", 403)
+			return
+		}
+		entries, _ := os.ReadDir(full)
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".") {
+				continue
 			}
-			if len(out) >= 5000 {
-				return filepath.SkipAll
+			info, err := e.Info()
+			if err != nil {
+				continue
 			}
-			info, e := d.Info()
-			rel, e2 := filepath.Rel(base, p)
-			if e == nil && e2 == nil {
-				out = append(out, fi{filepath.ToSlash(rel), info.Size(), info.ModTime().Unix()})
+			out = append(out, item{e.Name(), e.IsDir(), info.Size(), info.ModTime().Unix()})
+		}
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].Dir != out[j].Dir {
+				return out[i].Dir
 			}
-			return nil
+			return out[i].T > out[j].T
 		})
-		sort.Slice(out, func(i, j int) bool { return out[i].T > out[j].T })
 	}
-	writeJSON(w, map[string]any{"shareOn": c.ShareOn && c.ShareDir != "", "files": out})
+	writeJSON(w, map[string]any{"shareOn": on, "path": sub, "items": out})
 }
 
 func download(w http.ResponseWriter, r *http.Request) {
