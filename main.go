@@ -215,20 +215,22 @@ func adminSet(w http.ResponseWriter, r *http.Request) {
 func adminBrowse(w http.ResponseWriter, r *http.Request) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
-		case "windows":
+			case "windows":
 		script := `[Console]::OutputEncoding=[Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern void keybd_event(byte b, byte s, uint f, UIntPtr e); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);'
 $o = New-Object System.Windows.Forms.Form
-$o.TopMost = $true
 $o.ShowInTaskbar = $false
 $o.FormBorderStyle = 'None'
-$o.Opacity = 0
-$o.StartPosition = 'CenterScreen'
+$o.StartPosition = 'Manual'
+$o.Location = New-Object System.Drawing.Point(-32000,-32000)
 $o.Size = New-Object System.Drawing.Size(1,1)
+$o.TopMost = $true
 $o.Show()
-[System.Windows.Forms.SendKeys]::SendWait('%')
-$o.Activate()
+[W.U]::keybd_event(0x12,0,0,[UIntPtr]::Zero)
+[W.U]::keybd_event(0x12,0,2,[UIntPtr]::Zero)
+[W.U]::SetForegroundWindow($o.Handle) | Out-Null
 $f = New-Object System.Windows.Forms.FolderBrowserDialog
 if ($f.ShowDialog($o) -eq 'OK') { Write-Output $f.SelectedPath }
 $o.Dispose()`
