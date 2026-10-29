@@ -13,12 +13,26 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+      - name: Make icon
+        run: |
+          pip install pillow
+          python3 - <<'EOF'
+          from PIL import Image, ImageDraw
+          S = 256
+          im = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+          d = ImageDraw.Draw(im)
+          d.rounded_rectangle((0, 0, S - 1, S - 1), radius=56, fill=(37, 99, 235, 255))
+          d.polygon([(128, 44), (60, 118), (104, 118), (104, 172), (152, 172), (152, 118), (196, 118)], fill='white')
+          d.rounded_rectangle((60, 196, 196, 212), radius=8, fill='white')
+          im.save('icon.ico', sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+          EOF
+          go run github.com/akavel/rsrc@latest -ico icon.ico -arch amd64 -o rsrc_windows_amd64.syso
       - name: Build
         run: |
           go mod tidy
           mkdir dist
           export CGO_ENABLED=0
-          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/shareUp.exe .
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o dist/shareUp.exe .
           GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/shareUp-mac-arm64 .
           GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/shareUp-mac-intel .
           GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/shareUp-linux .
