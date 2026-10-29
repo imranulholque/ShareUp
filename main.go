@@ -395,8 +395,22 @@ func openBrowser(u string) {
 	}
 }
 
+func alreadyRunning(port int) bool {
+	c := http.Client{Timeout: 700 * time.Millisecond}
+	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/admin/state", port))
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
 func main() {
 	loadConfig()
+		if alreadyRunning(get().Port) {
+		openBrowser(fmt.Sprintf("http://localhost:%d/admin", get().Port))
+		return
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -413,6 +427,10 @@ func main() {
 	mux.HandleFunc("/admin/set", local(adminSet))
 	mux.HandleFunc("/admin/browse", local(adminBrowse))
 	mux.HandleFunc("/admin/qr.png", local(adminQR))
+		mux.HandleFunc("/admin/quit", local(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"ok": true})
+		go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()
+	}))
 	handler = mux
 
 	p, err := start(get().Port)
