@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>shareUp</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;padding:16px;max-width:560px;margin:auto;background:#f6f7f9;color:#111}
+h1{font-size:22px} h2{font-size:16px;margin-top:28px}
+.btn{display:block;text-align:center;background:#2563eb;color:#fff;padding:16px;border-radius:12px;font-size:17px;border:0;width:100%}
+.btn2{background:#e5e7eb;color:#111;padding:8px 12px;border-radius:8px;border:0}
+.row{background:#fff;border-radius:10px;padding:10px;margin-top:8px;word-break:break-all}
+progress{width:100%} small{color:#555} a{color:#2563eb;text-decoration:none}
+</style></head><body>
+<h1>shareUp</h1>
+<h2>Send to PC</h2>
+<label class="btn">Choose files<input id="f" type="file" multiple hidden></label>
+<div id="ups"></div>
+<h2>Files from PC <button class="btn2" id="rf">Refresh</button></h2>
+<div id="dl"></div>
+<script>
+const $=s=>document.querySelector(s);
+const inp=$('#f'),ups=$('#ups');
+inp.onchange=async()=>{const fs=[...inp.files];for(const f of fs)await up(f);inp.value=''};
+function up(f){return new Promise(res=>{
+ const row=document.createElement('div');row.className='row';
+ row.innerHTML='<div class="n"></div><progress max="100" value="0"></progress><small>0%</small>';
+ row.querySelector('.n').textContent=f.name;ups.prepend(row);
+ const p=row.querySelector('progress'),s=row.querySelector('small');
+ const x=new XMLHttpRequest();
+ x.open('POST','/upload?name='+encodeURIComponent(f.name));
+ x.upload.onprogress=e=>{if(e.lengthComputable){const v=Math.round(e.loaded/e.total*100);p.value=v;s.textContent=v+'%'}};
+ x.onload=()=>{s.textContent=x.status==200?'✓ done':'✗ error';res()};
+ x.onerror=()=>{s.textContent='✗ failed';res()};
+ x.send(f);
+})}
+function sz(n){const u=['B','KB','MB','GB','TB'];let i=0;while(n>=1024&&i<4){n/=1024;i++}return n.toFixed(i?1:0)+' '+u[i]}
+async function load(){
+ const d=$('#dl');d.textContent='';
+ try{
+  const j=await (await fetch('/api/list')).json();
+  if(!j.shareOn){d.innerHTML='<div class="row"><small>PC sharing is off</small></div>';return}
+  if(!j.files.length){d.innerHTML='<div class="row"><small>No files</small></div>';return}
+  for(const f of j.files){
+   const r=document.createElement('div');r.className='row';
+   const a=document.createElement('a');a.textContent=f.name;
+   a.href='/dl/'+f.name.split('/').map(encodeURIComponent).join('/');a.setAttribute('download','');
+   const s=document.createElement('small');s.textContent=' ('+sz(f.size)+')';
+   r.append(a,s);d.append(r);
+  }
+ }catch(e){d.textContent='Error'}
+}
+$('#rf').onclick=load;load();
+</script></body></html>
