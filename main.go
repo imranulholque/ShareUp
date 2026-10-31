@@ -215,7 +215,7 @@ func adminSet(w http.ResponseWriter, r *http.Request) {
 func adminBrowse(w http.ResponseWriter, r *http.Request) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
-			case "windows":
+	case "windows":
 		script := `[Console]::OutputEncoding=[Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -240,7 +240,7 @@ $o.Dispose()`
 	default:
 		cmd = exec.Command("zenity", "--file-selection", "--directory")
 	}
-		hideWindow(cmd)
+	hideWindow(cmd)
 	out, _ := cmd.Output()
 	writeJSON(w, map[string]string{"path": strings.TrimSpace(string(out))})
 }
@@ -359,32 +359,87 @@ func list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"shareOn": on, "path": sub, "items": out})
 }
 
-func download(w http.ResponseWriter, r *http.Request) {
+// resolve opens a shared file safely (no path escape, no directories).
+func resolve(w http.ResponseWriter, r *http.Request, prefix string) (*os.File, os.FileInfo, bool) {
 	c := get()
 	if !c.ShareOn || c.ShareDir == "" {
 		http.Error(w, "sharing off", 403)
-		return
+		return nil, nil, false
 	}
 	base := filepath.Clean(c.ShareDir)
-	full := filepath.Join(base, filepath.FromSlash(strings.TrimPrefix(r.URL.Path, "/dl/")))
+	full := filepath.Join(base, filepath.FromSlash(strings.TrimPrefix(r.URL.Path, prefix)))
 	rel, err := filepath.Rel(base, full)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		http.Error(w, "forbidden", 403)
-		return
+		return nil, nil, false
 	}
 	f, err := os.Open(full)
 	if err != nil {
 		http.NotFound(w, r)
+		return nil, nil, false
+	}
+	st, err := f.Stat()
+	if err != nil || st.IsDir() {
+		f.Close()
+		http.NotFound(w, r)
+		return nil, nil, false
+	}
+	return f, st, true
+}
+
+// ASCII fallback for the plain filename= parameter.
+func asciiName(n string) string {
+	var b strings.Builder
+	for _, r := range n {
+		if r < 32 || r > 126 || r == '"' || r == '\\' {
+			b.WriteByte('_')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// download: always raw bytes with a fixed type, so the phone never
+// guesses a type and never appends an extension like .zip.
+func download(w http.ResponseWriter, r *http.Request) {
+	f, st, ok := resolve(w, r, "/dl/")
+	if !ok {
 		return
 	}
 	defer f.Close()
-	st, err := f.Stat()
-	if err != nil || st.IsDir() {
-		http.NotFound(w, r)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition",
+		`attachment; filename="`+asciiName(st.Name())+`"; filename*=UTF-8''`+url.PathEscape(st.Name()))
+	http.ServeContent(w, r, "", st.ModTime(), f)
+}
+
+var previewTypes = map[string]string{
+	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+	".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+	".svg": "image/svg+xml", ".avif": "image/avif",
+	".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".m4v": "video/mp4",
+}
+
+// preview: inline, only for image/video thumbnails.
+func preview(w http.ResponseWriter, r *http.Request) {
+	f, st, ok := resolve(w, r, "/pv/")
+	if !ok {
 		return
 	}
-	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(st.Name()))
-	http.ServeContent(w, r, st.Name(), st.ModTime(), f)
+	defer f.Close()
+	ct, ok := previewTypes[strings.ToLower(filepath.Ext(st.Name()))]
+	if !ok {
+		http.Error(w, "no preview", 404)
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if ct == "image/svg+xml" {
+		w.Header().Set("Content-Security-Policy", "sandbox")
+	}
+	http.ServeContent(w, r, "", st.ModTime(), f)
 }
 
 func openBrowser(u string) {
@@ -410,7 +465,7 @@ func alreadyRunning(port int) bool {
 
 func main() {
 	loadConfig()
-		if alreadyRunning(get().Port) {
+	if alreadyRunning(get().Port) {
 		openBrowser(fmt.Sprintf("http://localhost:%d/admin", get().Port))
 		return
 	}
@@ -425,12 +480,13 @@ func main() {
 	mux.HandleFunc("/upload", upload)
 	mux.HandleFunc("/api/list", list)
 	mux.HandleFunc("/dl/", download)
+	mux.HandleFunc("/pv/", preview)
 	mux.HandleFunc("/admin", local(page("admin.html")))
 	mux.HandleFunc("/admin/state", local(adminState))
 	mux.HandleFunc("/admin/set", local(adminSet))
 	mux.HandleFunc("/admin/browse", local(adminBrowse))
 	mux.HandleFunc("/admin/qr.png", local(adminQR))
-		mux.HandleFunc("/admin/quit", local(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/admin/quit", local(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true})
 		go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()
 	}))
