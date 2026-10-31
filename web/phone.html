@@ -101,11 +101,11 @@ function tile(it){
  else{
   el.href='/dl/'+enc;el.setAttribute('download','');
   if(IMG.includes(ext)){
-   const im=document.createElement('img');im.loading='lazy';im.src='/dl/'+enc;
+   const im=document.createElement('img');im.loading='lazy';im.src='/pv/'+enc;
    im.onerror=()=>{th.textContent='';th.append(badge(it.name))};th.append(im);
   }else if(VID.includes(ext)){
    const v=document.createElement('video');v.muted=true;v.preload='metadata';v.playsInline=true;
-   v.src='/dl/'+enc+'#t=0.1';v.onerror=()=>{th.textContent='';th.append(badge(it.name))};th.append(v);
+   v.src='/pv/'+enc+'#t=0.1';v.onerror=()=>{th.textContent='';th.append(badge(it.name))};th.append(v);
   }else th.append(badge(it.name));
  }
  const n=document.createElement('div');n.className='nm';n.textContent=it.name;
