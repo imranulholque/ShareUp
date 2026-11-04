@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -115,6 +116,10 @@ func pickIP(c Config, ips []string) string {
 }
 
 func isLocal(r *http.Request) bool {
+	// Anything that came through a proxy/tunnel is never "local".
+	if r.Header.Get("Cf-Connecting-Ip") != "" || r.Header.Get("X-Forwarded-For") != "" {
+		return false
+	}
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	ip := net.ParseIP(host)
 	if ip == nil {
@@ -164,20 +169,29 @@ func adminState(w http.ResponseWriter, r *http.Request) {
 		u = fmt.Sprintf("http://%s:%d", ip, curPort.Load())
 	}
 	writeJSON(w, map[string]any{"port": curPort.Load(), "recvDir": c.RecvDir,
-		"shareDir": c.ShareDir, "shareOn": c.ShareOn, "ip": ip, "ips": ips, "url": u})
+		"shareDir": c.ShareDir, "shareOn": c.ShareOn, "ip": ip, "ips": ips, "url": u,
+		"autostart": autoOn.Load(), "remote": remoteSnapshot()})
 }
 
 func adminSet(w http.ResponseWriter, r *http.Request) {
 	var q struct {
-		Port     *int    `json:"port"`
-		RecvDir  *string `json:"recvDir"`
-		ShareDir *string `json:"shareDir"`
-		ShareOn  *bool   `json:"shareOn"`
-		IP       *string `json:"ip"`
+		Port      *int    `json:"port"`
+		RecvDir   *string `json:"recvDir"`
+		ShareDir  *string `json:"shareDir"`
+		ShareOn   *bool   `json:"shareOn"`
+		IP        *string `json:"ip"`
+		Autostart *bool   `json:"autostart"`
 	}
 	if json.NewDecoder(r.Body).Decode(&q) != nil {
 		http.Error(w, "bad request", 400)
 		return
+	}
+	if q.Autostart != nil {
+		if err := setAutostart(*q.Autostart); err != nil {
+			http.Error(w, "Could not change startup setting: "+err.Error(), 500)
+			return
+		}
+		autoOn.Store(autostartEnabled())
 	}
 	if q.Port != nil && *q.Port != int(curPort.Load()) {
 		if *q.Port < 1024 || *q.Port > 65535 {
@@ -209,6 +223,25 @@ func adminSet(w http.ResponseWriter, r *http.Request) {
 	}
 	saveLocked()
 	mu.Unlock()
+	adminState(w, r)
+}
+
+func adminRemote(w http.ResponseWriter, r *http.Request) {
+	var q struct {
+		On    *bool `json:"on"`
+		Renew bool  `json:"renew"`
+	}
+	json.NewDecoder(r.Body).Decode(&q)
+	if q.On != nil {
+		if *q.On {
+			remoteStart()
+		} else {
+			remoteStop()
+		}
+	}
+	if q.Renew {
+		remoteRenew()
+	}
 	adminState(w, r)
 }
 
@@ -247,7 +280,7 @@ $o.Dispose()`
 
 func adminQR(w http.ResponseWriter, r *http.Request) {
 	u := r.URL.Query().Get("u")
-	if !strings.HasPrefix(u, "http://") {
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 		http.Error(w, "bad", 400)
 		return
 	}
@@ -257,6 +290,7 @@ func adminQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Write(png)
 }
 
@@ -270,6 +304,55 @@ func cleanName(n string) string {
 		n = "file"
 	}
 	return n
+}
+
+func createUnique(dir, name string) (*os.File, string, error) {
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 0; ; i++ {
+		n := name
+		if i > 0 {
+			n = fmt.Sprintf("%s (%d)%s", stem, i, ext)
+		}
+		dest := filepath.Join(dir, n)
+		f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if err == nil {
+			return f, dest, nil
+		}
+		if !os.IsExist(err) {
+			return nil, "", err
+		}
+	}
+}
+
+// Chunked uploads: the phone sends big files in pieces (id + offset), which keeps
+// every request small enough for the internet tunnel (Cloudflare limits ~100 MB/request).
+type upState struct {
+	mu   sync.Mutex
+	f    *os.File
+	dest string
+	size int64
+	last time.Time
+}
+
+var (
+	upMu sync.Mutex
+	ups  = map[string]*upState{}
+)
+
+func janitor() {
+	for {
+		time.Sleep(time.Minute)
+		upMu.Lock()
+		for id, st := range ups {
+			if time.Since(st.last) > 30*time.Minute {
+				st.f.Close()
+				os.Remove(st.dest)
+				delete(ups, id)
+			}
+		}
+		upMu.Unlock()
+	}
 }
 
 func upload(w http.ResponseWriter, r *http.Request) {
@@ -286,35 +369,73 @@ func upload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	name := cleanName(r.URL.Query().Get("name"))
-	ext := filepath.Ext(name)
-	stem := strings.TrimSuffix(name, ext)
-	var f *os.File
-	var dest string
-	for i := 0; ; i++ {
-		n := name
-		if i > 0 {
-			n = fmt.Sprintf("%s (%d)%s", stem, i, ext)
-		}
-		dest = filepath.Join(c.RecvDir, n)
-		var err error
-		f, err = os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-		if err == nil {
-			break
-		}
-		if !os.IsExist(err) {
+	q := r.URL.Query()
+	name := cleanName(q.Get("name"))
+	id := q.Get("id")
+
+	// Whole file in one request (old behaviour).
+	if id == "" {
+		f, dest, err := createUnique(c.RecvDir, name)
+		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
+		_, err = io.Copy(f, r.Body)
+		f.Close()
+		if err != nil {
+			os.Remove(dest)
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		fmt.Println("Received:", dest)
+		writeJSON(w, map[string]any{"ok": true})
+		return
 	}
-	_, err := io.Copy(f, r.Body)
-	f.Close()
-	if err != nil {
-		os.Remove(dest)
+
+	off, _ := strconv.ParseInt(q.Get("off"), 10, 64)
+	last := q.Get("last") != "0"
+
+	upMu.Lock()
+	st := ups[id]
+	if st == nil {
+		if off != 0 {
+			upMu.Unlock()
+			http.Error(w, "unknown upload", 409)
+			return
+		}
+		f, dest, err := createUnique(c.RecvDir, name)
+		if err != nil {
+			upMu.Unlock()
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		st = &upState{f: f, dest: dest}
+		ups[id] = st
+	}
+	st.last = time.Now()
+	upMu.Unlock()
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.size != off { // tell the phone where we really are so it can resume
+		http.Error(w, strconv.FormatInt(st.size, 10), 409)
+		return
+	}
+	n, err := io.Copy(st.f, r.Body)
+	if err != nil { // roll back this chunk so the phone can retry it
+		st.f.Truncate(st.size)
+		st.f.Seek(st.size, io.SeekStart)
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	fmt.Println("Received:", dest)
+	st.size += n
+	if last {
+		st.f.Close()
+		upMu.Lock()
+		delete(ups, id)
+		upMu.Unlock()
+		fmt.Println("Received:", st.dest)
+	}
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -463,13 +584,8 @@ func alreadyRunning(port int) bool {
 	return resp.StatusCode == 200
 }
 
-func main() {
-	loadConfig()
-	if alreadyRunning(get().Port) {
-		openBrowser(fmt.Sprintf("http://localhost:%d/admin", get().Port))
-		return
-	}
-	mux := http.NewServeMux()
+// Routes that phones use. Shared by the local-network server and the internet server.
+func phoneRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -481,16 +597,43 @@ func main() {
 	mux.HandleFunc("/api/list", list)
 	mux.HandleFunc("/dl/", download)
 	mux.HandleFunc("/pv/", preview)
+}
+
+func main() {
+	silent := len(os.Args) > 1 && os.Args[1] == "--startup" // launched at sign-in: no browser window
+	loadConfig()
+	if alreadyRunning(get().Port) {
+		if !silent {
+			openBrowser(fmt.Sprintf("http://localhost:%d/admin", get().Port))
+		}
+		return
+	}
+	autoOn.Store(autostartEnabled())
+	if autoOn.Load() {
+		setAutostart(true) // refresh the saved path in case the app was moved
+	}
+
+	mux := http.NewServeMux()
+	phoneRoutes(mux)
 	mux.HandleFunc("/admin", local(page("admin.html")))
 	mux.HandleFunc("/admin/state", local(adminState))
 	mux.HandleFunc("/admin/set", local(adminSet))
+	mux.HandleFunc("/admin/remote", local(adminRemote))
 	mux.HandleFunc("/admin/browse", local(adminBrowse))
 	mux.HandleFunc("/admin/qr.png", local(adminQR))
 	mux.HandleFunc("/admin/quit", local(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true})
-		go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()
+		go func() { remoteStop(); time.Sleep(300 * time.Millisecond); os.Exit(0) }()
 	}))
 	handler = mux
+
+	// Internet server: phone routes only (no admin), behind the private key.
+	rmux := http.NewServeMux()
+	phoneRoutes(rmux)
+	if err := startRemoteListener(rmux); err != nil {
+		fmt.Println("Internet mode unavailable:", err)
+	}
+	go janitor()
 
 	p, err := start(get().Port)
 	if err != nil {
@@ -505,6 +648,8 @@ func main() {
 	admin := fmt.Sprintf("http://localhost:%d/admin", p)
 	fmt.Println("shareUp running. Admin:", admin)
 	fmt.Println("Close this window to stop.")
-	openBrowser(admin)
+	if !silent {
+		openBrowser(admin)
+	}
 	select {}
 }
