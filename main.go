@@ -32,6 +32,9 @@ type Config struct {
 	ShareDir string `json:"shareDir"`
 	ShareOn  bool   `json:"shareOn"`
 	IP       string `json:"ip"`
+
+	AutoUpdate bool   `json:"autoUpdate"`
+	UpdateRepo string `json:"updateRepo,omitempty"` // optional override of the auto-detected repo
 }
 
 var (
@@ -54,7 +57,7 @@ func loadConfig() {
 	exe, _ := os.Executable()
 	cfgPath = filepath.Join(filepath.Dir(exe), "shareUp.json")
 	home, _ := os.UserHomeDir()
-	cfg = Config{Port: 8080, RecvDir: filepath.Join(home, "Downloads", "shareUp")}
+	cfg = Config{Port: 8080, RecvDir: filepath.Join(home, "Downloads", "shareUp"), AutoUpdate: true}
 	if b, err := os.ReadFile(cfgPath); err == nil {
 		_ = json.Unmarshal(b, &cfg)
 	}
@@ -170,7 +173,7 @@ func adminState(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{"port": curPort.Load(), "recvDir": c.RecvDir,
 		"shareDir": c.ShareDir, "shareOn": c.ShareOn, "ip": ip, "ips": ips, "url": u,
-		"autostart": autoOn.Load(), "remote": remoteSnapshot()})
+		"autostart": autoOn.Load(), "remote": remoteSnapshot(), "update": updateSnapshot(), "version": version})
 }
 
 func adminSet(w http.ResponseWriter, r *http.Request) {
@@ -181,6 +184,7 @@ func adminSet(w http.ResponseWriter, r *http.Request) {
 		ShareOn   *bool   `json:"shareOn"`
 		IP        *string `json:"ip"`
 		Autostart *bool   `json:"autostart"`
+		AutoUpd   *bool   `json:"autoUpdate"`
 	}
 	if json.NewDecoder(r.Body).Decode(&q) != nil {
 		http.Error(w, "bad request", 400)
@@ -207,6 +211,14 @@ func adminSet(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		cfg.Port = p
 		mu.Unlock()
+	}
+	if q.AutoUpd != nil {
+		mu.Lock()
+		cfg.AutoUpdate = *q.AutoUpd
+		mu.Unlock()
+		if *q.AutoUpd {
+			go checkUpdate() // show a new build immediately
+		}
 	}
 	mu.Lock()
 	if q.RecvDir != nil {
@@ -600,11 +612,24 @@ func phoneRoutes(mux *http.ServeMux) {
 }
 
 func main() {
-	silent := len(os.Args) > 1 && os.Args[1] == "--startup" // launched at sign-in: no browser window
+	silent := false // launched at sign-in: stay in the tray, no window
+	afterUpdate := false
+	for _, a := range os.Args[1:] {
+		switch a {
+		case "--startup":
+			silent = true
+		case "--after-update":
+			afterUpdate = true
+		}
+	}
 	loadConfig()
+	cleanupOldBuild()
+	if afterUpdate { // the old version is exiting; give it a moment to free the port
+		time.Sleep(1500 * time.Millisecond)
+	}
 	if alreadyRunning(get().Port) {
 		if !silent {
-			openBrowser(fmt.Sprintf("http://localhost:%d/admin", get().Port))
+			showExisting(get().Port)
 		}
 		return
 	}
@@ -621,9 +646,14 @@ func main() {
 	mux.HandleFunc("/admin/remote", local(adminRemote))
 	mux.HandleFunc("/admin/browse", local(adminBrowse))
 	mux.HandleFunc("/admin/qr.png", local(adminQR))
+	mux.HandleFunc("/admin/update", local(adminUpdate))
+	mux.HandleFunc("/admin/show", local(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"ok": true})
+		uiShow()
+	}))
 	mux.HandleFunc("/admin/quit", local(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true})
-		go func() { remoteStop(); time.Sleep(300 * time.Millisecond); os.Exit(0) }()
+		go quitApp()
 	}))
 	handler = mux
 
@@ -634,22 +664,39 @@ func main() {
 		fmt.Println("Internet mode unavailable:", err)
 	}
 	go janitor()
+	go updateLoop()
 
 	p, err := start(get().Port)
 	if err != nil {
 		fmt.Printf("Port %d busy, using a random free port. Change it from the admin page.\n", get().Port)
 		if p, err = start(0); err != nil {
 			fmt.Println("Cannot start:", err)
-			fmt.Scanln()
 			return
 		}
 	}
 	curPort.Store(int32(p))
-	admin := fmt.Sprintf("http://localhost:%d/admin", p)
-	fmt.Println("shareUp running. Admin:", admin)
-	fmt.Println("Close this window to stop.")
-	if !silent {
-		openBrowser(admin)
+	fmt.Println("shareUp running. Admin:", adminURL())
+
+	runUI(silent) // blocks: native window + tray (Windows) or browser (other systems)
+}
+
+func adminURL() string { return fmt.Sprintf("http://localhost:%d/admin", curPort.Load()) }
+
+func quitApp() {
+	remoteStop()
+	time.Sleep(300 * time.Millisecond)
+	os.Exit(0)
+}
+
+// showExisting asks the already-running copy to show its window; falls back to the browser.
+func showExisting(port int) {
+	c := http.Client{Timeout: 2 * time.Second}
+	resp, err := c.Post(fmt.Sprintf("http://127.0.0.1:%d/admin/show", port), "application/json", nil)
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			return
+		}
 	}
-	select {}
+	openBrowser(fmt.Sprintf("http://localhost:%d/admin", port))
 }
