@@ -9,8 +9,11 @@
 @media (prefers-color-scheme:light){:root{--bg:#eef3f9;--panel:#fff;--line:#dbe3ee;--field:#f1f5fa;--text:#0e1a2b;--mute:#5d6b80;--a:#1d7be8;--ink:#fff}}
 [hidden]{display:none!important}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;padding:36px 20px 48px}
+html{height:100%}
+body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;padding:clamp(14px,3.5vw,36px) clamp(12px,3vw,24px) clamp(20px,4vw,48px)}
 .wrap{max-width:660px;margin:0 auto}
+@media (min-width:980px){.wrap{max-width:1080px}.cols{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px;align-items:start}.cols .panel{margin-bottom:16px}}
+@media (max-width:480px){.hero{padding:16px!important}.item{padding:14px 16px!important}details{padding:0 16px!important}.adv{flex-wrap:wrap}.adv>div.fix{flex:1 1 90px}header{flex-wrap:wrap;gap:8px}}
 header{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
 .brand{display:flex;gap:12px;align-items:center}
 .logo{width:40px;height:40px;border-radius:12px;background:var(--a);display:grid;place-items:center}
@@ -24,9 +27,11 @@ h1{font-size:22px;margin:0;font-weight:650;letter-spacing:-.01em;line-height:1.2
 .seg{display:inline-flex;background:var(--field);border-radius:12px;padding:4px;gap:2px;margin-bottom:22px}
 .seg button{background:none;border:0;color:var(--mute);padding:7px 18px;border-radius:9px;font:inherit;font-weight:600;cursor:pointer}
 .seg button.on{background:var(--panel);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.25)}
-.split{display:flex;gap:26px;align-items:center}
+.split{display:flex;gap:clamp(14px,3vw,26px);align-items:center}
 @media (max-width:560px){.split{flex-direction:column;align-items:stretch}}
-.qrcol{width:208px;height:208px;flex:none;margin:0 auto}
+.upd{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 18px;margin-bottom:16px;border:1px solid var(--a);border-radius:14px;background:var(--panel)}
+.upd div{flex:1;min-width:180px}.upd small{display:block;color:var(--mute);font-size:13px}
+.qrcol{width:clamp(150px,30vw,208px);aspect-ratio:1;flex:none;margin:0 auto}
 #qr{width:100%;height:100%;background:#fff;border-radius:14px;padding:10px;display:block}
 .ph{width:100%;height:100%;border:1.5px dashed var(--line);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:42px;color:var(--mute)}
 .spin{width:34px;height:34px;border-radius:50%;border:3px solid var(--line);border-top-color:var(--a);animation:sp 1s linear infinite}
@@ -85,6 +90,9 @@ footer{text-align:center;margin-top:8px}
  <div class="pill"><span class="dot" id="dot"></span><span id="status">Running</span></div>
 </header>
 
+<div class="upd" id="upd" hidden><div><b id="updt"></b><small id="updd"></small></div><button class="b" id="updgo">Update now</button></div>
+
+<div class="cols">
 <div class="panel hero">
  <div class="seg"><button data-m="lan">Same Wi-Fi</button><button data-m="net">Internet</button></div>
  <div class="split">
@@ -109,6 +117,7 @@ footer{text-align:center;margin-top:8px}
  </div>
 </div>
 
+<div>
 <div class="panel">
  <div class="item">
   <b>Save received files to</b>
@@ -120,7 +129,11 @@ footer{text-align:center;margin-top:8px}
   <div class="path"><input type="text" id="share" aria-label="Shared folder"><button class="g" id="bs">Browse</button></div>
  </div>
  <div class="item">
-  <div class="top"><div><b>Start when I sign in</b><small>Runs quietly in the background. Open shareUp again to see this page.</small></div>
+  <div class="top"><div><b>Auto update</b><small id="updsub">Checks GitHub for a new build and shows it here</small></div>
+   <label class="switch" aria-label="Auto update"><input type="checkbox" id="aupd"><span class="slider"></span></label></div>
+ </div>
+ <div class="item">
+  <div class="top"><div><b>Start when I sign in</b><small>Runs quietly in the system tray. Click the tray icon or open shareUp again to see this window.</small></div>
    <label class="switch" aria-label="Start with computer"><input type="checkbox" id="auto"><span class="slider"></span></label></div>
  </div>
 </div>
@@ -137,6 +150,8 @@ footer{text-align:center;margin-top:8px}
  <div id="msg" role="alert"></div>
 </div>
 
+</div>
+</div>
 <footer><button class="q" id="quit">Quit shareUp</button></footer>
 </div>
 <div class="toast" id="toast"></div>
@@ -182,12 +197,35 @@ function render(s){
  $('#rbar').hidden=r.status!=='downloading';$('#rfill').style.width=r.progress+'%';
  $('#rlink').hidden=r.status!=='on';$('#nurl').textContent=r.url||'';
 
+ renderUpd(s);
  setVal('#recv',s.recvDir);setVal('#share',s.shareDir);setVal('#port',s.port);
  $('#on').checked=s.shareOn;$('#auto').checked=s.autostart;
  const ip=$('#ip'),key=s.ips.join();
  if(ip.dataset.k!==key||ip.dataset.s!==s.ip){ip.dataset.k=key;ip.dataset.s=s.ip;ip.innerHTML='';
   s.ips.forEach(i=>{const o=document.createElement('option');o.value=o.textContent=i;if(i==s.ip)o.selected=true;ip.append(o)})}
 }
+function renderUpd(s){
+ const u=s.update;if(!u)return;
+ $('#aupd').checked=u.enabled;
+ const b=$('#upd');
+ let sub='Checks GitHub for a new build and shows it here';
+ if(u.enabled){
+  if(u.status==='checking')sub='Checking for updates…';
+  else if(u.status==='error')sub=u.error;
+  else if(u.available)sub='New build '+u.latest+' is ready (you have '+u.current+')';
+  else if(u.status==='uptodate')sub=u.latest?'Up to date ('+u.current+')':'Up to date – no releases yet';
+ }
+ $('#updsub').textContent=sub;
+ const show=u.enabled&&(u.available||u.status==='installing');
+ b.hidden=!show;
+ if(show){
+  $('#updt').textContent=u.status==='installing'?'Installing '+u.latest+'…'+(u.progress?' '+u.progress+'%':''):'New version '+u.latest+' available';
+  $('#updd').textContent=u.status==='error'?u.error:'You have '+u.current+'. shareUp will restart after updating.';
+  $('#updgo').disabled=u.status==='installing';
+ }
+}
+$('#aupd').onchange=async()=>{const s=await api('/admin/set',{autoUpdate:$('#aupd').checked});render(s||await api('/admin/state'));toast($('#aupd').checked?'Auto update on':'Auto update off')};
+$('#updgo').onclick=async()=>render(await api('/admin/update',{install:true}));
 document.querySelectorAll('.seg button').forEach(b=>b.onclick=()=>{mode=b.dataset.m;render(S)});
 $('#cp').onclick=()=>S&&S.url&&copy(S.url);
 $('#cp2').onclick=()=>S&&S.remote.link&&copy(S.remote.link);
@@ -201,7 +239,7 @@ $('#on').onchange=async()=>{render(await api('/admin/set',{shareOn:$('#on').chec
 $('#auto').onchange=async()=>{const s=await api('/admin/set',{autostart:$('#auto').checked});render(s||await api('/admin/state'));if(s)toast(s.autostart?'Will start when you sign in':'Startup off')};
 $('#br').onclick=async()=>{const j=await api('/admin/browse');if(j&&j.path)render(await api('/admin/set',{recvDir:j.path}))};
 $('#bs').onclick=async()=>{const j=await api('/admin/browse');if(j&&j.path)render(await api('/admin/set',{shareDir:j.path}))};
-$('#quit').onclick=async()=>{if(!confirm('Stop shareUp?'))return;await api('/admin/quit');document.body.innerHTML='<p style="text-align:center;margin-top:120px;font-family:system-ui;color:#999">shareUp stopped. You can close this tab.</p>'};
+$('#quit').onclick=async()=>{if(!confirm('Stop shareUp?'))return;await api('/admin/quit');document.body.innerHTML='<p style="text-align:center;margin-top:120px;font-family:system-ui;color:#999">shareUp stopped. You can close this window.</p>'};
 
 (async()=>{render(await api('/admin/state'));
  setInterval(async()=>{if(document.hidden)return;try{render(await (await fetch('/admin/state',{method:'POST'})).json())}catch(e){}},2000)})();
