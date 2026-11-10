@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.23'
       - name: Make icon
         run: |
           pip install pillow
@@ -29,19 +29,24 @@ jobs:
           go run github.com/akavel/rsrc@latest -ico icon.ico -arch amd64 -o rsrc_windows_amd64.syso
       - name: Build
         run: |
+          # Version = tag name, or a build number for manual runs. Repo = whichever repo runs this.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then VER="$GITHUB_REF_NAME"; else VER="build-$GITHUB_RUN_NUMBER"; fi
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          LD="-s -w -X main.version=$VER -X main.repo=$GITHUB_REPOSITORY"
           go mod tidy
           mkdir dist
           export CGO_ENABLED=0
-          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o dist/shareUp.exe .
-          GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/shareUp-mac-arm64 .
-          GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/shareUp-mac-intel .
-          GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/shareUp-linux .
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$LD -H windowsgui" -o dist/shareUp.exe .
+          GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags "$LD" -o dist/shareUp-mac-arm64 .
+          GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags "$LD" -o dist/shareUp-mac-intel .
+          GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "$LD" -o dist/shareUp-linux .
       - uses: actions/upload-artifact@v4
         with:
           name: shareUp
           path: dist/*
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Release (every build is published so the app can see it)
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.VER }}
+          make_latest: true
           files: dist/*
